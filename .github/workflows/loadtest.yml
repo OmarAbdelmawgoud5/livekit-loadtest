@@ -1,0 +1,22 @@
+name: loadtest
+on:
+  workflow_dispatch:
+    inputs:
+      rooms:
+        default: "5"
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install lk
+        run: curl -sSL https://get.livekit.io/cli | bash
+      - name: Load test
+        env:
+          LIVEKIT_API_KEY: ${{ secrets.LK_KEY }}
+          LIVEKIT_API_SECRET: ${{ secrets.LK_SECRET }}
+        run: |
+          for i in $(seq 1 ${{ inputs.rooms }}); do
+            lk load-test --url ${{ secrets.LK_URL }} --room loadtest-$i \
+              --video-publishers 2 --subscribers 2 --duration 3m &
+          done
+          wait
