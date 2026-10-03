@@ -1,22 +1,90 @@
 name: loadtest
+
 on:
   workflow_dispatch:
     inputs:
       rooms:
-        default: "5"
+        description: "Number of 1:1 rooms (2 publishers + 2 subscribers each)"
+        default: "8"
+      delay:
+        description: "Seconds to wait between starting each room"
+        default: "3"
+      duration:
+        description: "How long each room stays connected (e.g. 5m)"
+        default: "5m"
+
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ROOMS: ${{ inputs.rooms }}
+      DELAY: ${{ inputs.delay }}
+      DURATION: ${{ inputs.duration }}
+      LK_URL: ${{ secrets.LK_URL }}
+      LIVEKIT_API_KEY: ${{ secrets.LK_KEY }}
+      LIVEKIT_API_SECRET: ${{ secrets.LK_SECRET }}
     steps:
-      - name: Install lk
+      - name: Install lk CLI
         run: curl -sSL https://get.livekit.io/cli | bash
-      - name: Load test
-        env:
-          LIVEKIT_API_KEY: ${{ secrets.LK_KEY }}
-          LIVEKIT_API_SECRET: ${{ secrets.LK_SECRET }}
+
+      - name: Show runner size
+        run: echo "runner cores=$(nproc) mem=$(free -m | awk '/Mem:/ {print $2}')MB"
+
+      - name: Monitor runner load (background)
         run: |
-          for i in $(seq 1 ${{ inputs.rooms }}); do
-            lk load-test --url ${{ secrets.LK_URL }} --room loadtest-$i \
-              --video-publishers 2 --subscribers 2 --duration 3m &
+          nohup bash -c 'while true; do echo "$(date +%T) runner load=$(cut -d" " -f1 /proc/loadavg) cores=$(nproc)"; sleep 10; done' > runner_load.log 2>&1 &
+
+      - name: Ramp load test
+        run: |
+          mkdir -p logs
+          echo "Starting $ROOMS rooms, $DELAY s apart, each for $DURATION"
+          for i in $(seq 1 "$ROOMS"); do
+            lk load-test \
+              --url "$LK_URL" \
+              --room "loadtest-$i" \
+              --video-publishers 2 \
+              --subscribers 2 \
+              --duration "$DURATION" \
+              > "logs/room-$i.log" 2>&1 &
+            echo "$(date +%T) started room $i"
+            sleep "$DELAY"
           done
+          echo "All rooms started, waiting for them to finish..."
           wait
+          echo "Done."
+
+      - name: Summary
+        if: always()
+        run: |
+          ok=0; partial=0; failed=0
+          for f in logs/room-*.log; do
+            [ -e "$f" ] || continue
+            if grep -qE "Total[^0-9]*4/4" "$f"; then
+              ok=$((ok+1))
+            elif grep -qE "Total[^0-9]*[1-3]/4" "$f"; then
+              partial=$((partial+1))
+            else
+              failed=$((failed+1))
+            fi
+          done
+          echo "=============================="
+          echo "Rooms requested : $ROOMS"
+          echo "Fully connected : $ok   (4/4 tracks)"
+          echo "Partial         : $partial"
+          echo "Failed          : $failed"
+          echo "------------------------------"
+          echo "Error counts:"
+          grep -hoE "context deadline exceeded|could not establish signal connection|could not connect after timeout|invalid state" logs/*.log 2>/dev/null | sort | uniq -c || true
+          echo "------------------------------"
+          echo "Runner load (last 5 samples):"
+          tail -n 5 runner_load.log || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loadtest-logs-${{ inputs.rooms }}-rooms
+          path: |
+            logs/
+            runner_load.log
