@@ -43,8 +43,8 @@ jobs:
             lk load-test \
               --url "$LK_URL" \
               --room "loadtest-$i" \
-              --video-publishers 2 \
-              --subscribers 2 \
+              --video-publishers 4 \
+              --subscribers 4 \
               --duration "$DURATION" \
               > "logs/room-$i.log" 2>&1 &
             echo "$(date +%T) started room $i"
